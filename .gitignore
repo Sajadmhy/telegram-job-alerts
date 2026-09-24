@@ -1,0 +1,8 @@
+.env
+*.session
+*.session-journal
+github_secret.txt
+.venv/
+__pycache__/
+*.command
+start.sh
