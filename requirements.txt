@@ -1,0 +1,4 @@
+telethon>=1.36
+python-dotenv>=1.0
+requests[socks]>=2.31
+pysocks>=1.7
