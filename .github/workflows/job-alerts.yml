@@ -1,0 +1,46 @@
+name: Job alerts
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 min (GitHub may start runs a few minutes late)
+  workflow_dispatch:          # "Run workflow" button for manual runs
+
+permissions:
+  contents: write             # to save state.json (last seen post per channel)
+
+concurrency:
+  group: job-alerts
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Check channels
+        env:
+          JOB_ALERTS_ENV: ${{ secrets.JOB_ALERTS_ENV }}
+        run: |
+          if [ -z "$JOB_ALERTS_ENV" ]; then echo "Secret JOB_ALERTS_ENV is missing"; exit 1; fi
+          printf '%s\n' "$JOB_ALERTS_ENV" > .env
+          python job_alert.py once
+          rm -f .env
+
+      - name: Save state
+        run: |
+          if ! git diff --quiet state.json; then
+            git config user.name "job-alerts-bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "Update state [skip ci]"
+            git pull --rebase --quiet && git push --quiet
+          fi
