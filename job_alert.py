@@ -16,7 +16,7 @@ Commands:
   python job_alert.py discover   # read the SOURCE_CHAT chat, find channels -> channels.json
   python job_alert.py chat-id    # after messaging your bot once, prints your chat id
   python job_alert.py test       # run the filter on the last 30 posts of each channel (no alerts sent)
-  python job_alert.py run        # watch forever and notify
+  python job_alert.py run        # watch forever and notify (+ resume tailoring, see tailor_bot.py)
   python job_alert.py once       # check once, notify, save state, exit (used by GitHub Actions)
   python job_alert.py export     # make a separate login for GitHub -> github_secret.txt
 """
@@ -33,6 +33,8 @@ from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.types import Channel, InputPeerChannel
+
+import tailor_bot
 
 HERE = Path(__file__).resolve().parent
 load_dotenv(HERE / ".env")
@@ -173,11 +175,16 @@ async def notify(client, ch, msg, score, terms):
         f"<a href=\"{post_link(ch, msg.id)}\">Open post</a>"
     )
     if BOT_TOKEN and NOTIFY_CHAT_ID:
+        payload = {"chat_id": NOTIFY_CHAT_ID, "text": body, "parse_mode": "HTML",
+                   "disable_web_page_preview": True}
+        if tailor_bot.enabled():
+            key = f"{ch['id']}_{msg.id}"
+            tailor_bot.remember_post(key, text)
+            payload["reply_markup"] = tailor_bot.button(key)
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": NOTIFY_CHAT_ID, "text": body, "parse_mode": "HTML",
-                      "disable_web_page_preview": True},
+                json=payload,
                 proxies=http_proxies(), timeout=30,
             )
             if r.ok:
@@ -333,6 +340,8 @@ async def poll_once(client, peers, state):
 async def cmd_run(client):
     peers, state = await setup_peers(client)
     where = "your bot" if BOT_TOKEN and NOTIFY_CHAT_ID else "Saved Messages"
+    if tailor_bot.start(BOT_TOKEN, NOTIFY_CHAT_ID, http_proxies()):
+        print(f"Resume tailoring on: alerts get a button, and the bot takes posts you send it ({tailor_bot.RESUME_API}).")
     print(f"Watching {len(peers)} channel(s), every {POLL_MINUTES:g} min. Alerts go to {where}. Ctrl+C to stop.")
     bot_say("✅ Job alerts running. Watching:\n" + "\n".join(f"• {c['title']}" for c, _ in peers.values()))
     while True:

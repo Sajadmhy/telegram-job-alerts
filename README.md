@@ -34,6 +34,19 @@ cp .env.example .env
 - Each post gets a score from keywords (English and Persian), such as React, Node, Python, backend, AI/LLM, برنامه نویس or فرانت. Non-tech roles like waitress or housekeeping subtract points. Posts with a score of at least `MIN_SCORE` get sent to you with the matched keywords and a link.
 - To tune what matches, edit the `POSITIVE` and `NEGATIVE` lists at the top of `job_alert.py`.
 
+## Tailored resumes (with the `unemployed` backend)
+
+When `python job_alert.py run` can reach the resume backend
+([Sajadmhy/unemployed](https://github.com/Sajadmhy/unemployed), `POST /tailor`), two things turn on:
+
+- Every alert gets a **📝 Tailor resume** button. Tap it and the PDF arrives in the chat a few minutes later.
+- You can send the bot any job post yourself, as text or a link, and get a resume back.
+
+Only messages from `NOTIFY_CHAT_ID` are acted on. Requests run one at a time. Set
+`RESUME_API` in `.env` (default `http://localhost:8000`; empty turns it off).
+This needs `run` mode on a machine that stays on, such as the Raspberry Pi; the
+GitHub Actions `once` mode can't reach the backend, so its alerts have no button.
+
 ## Running on GitHub Actions (free, always on)
 
 `.github/workflows/job-alerts.yml` runs `python job_alert.py once` every 10 minutes. It checks each channel for posts newer than the ones recorded in `state.json`, sends the alerts, then commits the updated `state.json`.

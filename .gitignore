@@ -6,3 +6,4 @@ github_secret.txt
 __pycache__/
 *.command
 start.sh
+posts.json
