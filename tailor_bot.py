@@ -23,6 +23,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from urllib.parse import unquote
 
 import requests
 
@@ -94,6 +95,21 @@ def _send_pdf(content: bytes, filename: str, caption: str, reply_to: int | None)
          files={"document": (filename, content, "application/pdf")})
 
 
+def _filename(disposition: str) -> str | None:
+    """The file name from a Content-Disposition header.
+
+    A name with spaces or non-ASCII letters arrives as filename*=utf-8''<%-encoded>
+    (RFC 5987) rather than filename="...", so both forms are read.
+    """
+    star = re.search(r"filename\*=(?:utf-8|UTF-8)''([^;]+)", disposition)
+    if star:
+        return unquote(star.group(1).strip())
+    plain = re.search(r'filename="([^"]+)"|filename=([^;]+)', disposition)
+    if plain:
+        return (plain.group(1) or plain.group(2)).strip()
+    return None
+
+
 # ---- work ----------------------------------------------------------------------
 def _worker() -> None:
     while True:
@@ -105,12 +121,12 @@ def _worker() -> None:
             r = requests.post(f"{RESUME_API}/tailor", json=job, timeout=RESUME_TIMEOUT_MIN * 60,
                               proxies={"http": None, "https": None})
             if r.status_code == 200:
-                name = re.search(r'filename="?([^";]+)', r.headers.get("content-disposition", ""))
+                name = _filename(r.headers.get("content-disposition", ""))
                 title = r.headers.get("X-Job-Title", "")
                 company = r.headers.get("X-Company", "")
                 mins = (time.time() - started) / 60
                 caption = f"📄 {title} · {company}".strip(" ·") + f"\n({mins:.0f} min)"
-                _send_pdf(r.content, name.group(1) if name else "resume.pdf", caption, reply_to)
+                _send_pdf(r.content, name or "resume.pdf", caption, reply_to)
             else:
                 try:
                     detail = r.json().get("detail", r.text)
