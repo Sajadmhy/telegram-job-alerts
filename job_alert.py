@@ -14,6 +14,7 @@ Why two pieces:
 
 Commands:
   python job_alert.py discover   # read the SOURCE_CHAT chat, find channels -> channels.json
+  python job_alert.py add <link> # watch another channel, e.g. add https://t.me/jobs_finding
   python job_alert.py chat-id    # after messaging your bot once, prints your chat id
   python job_alert.py test       # run the filter on the last 30 posts of each channel (no alerts sent)
   python job_alert.py run        # watch forever and notify (+ resume tailoring, see tailor_bot.py)
@@ -271,6 +272,33 @@ async def resolve(client, ch):
         return None
 
 
+async def cmd_add(client):
+    """python job_alert.py add https://t.me/name [@other ...] - watch more channels."""
+    targets = sys.argv[2:]
+    if not targets:
+        sys.exit("Usage: python job_alert.py add https://t.me/channel_name [@another ...]")
+    channels = load_json(CHANNELS_FILE, [])
+    known = {c["id"] for c in channels}
+    for raw in targets:
+        name = re.sub(r"^(?:https?://)?(?:t\.me|telegram\.me)/(?:s/)?", "", raw.strip()).lstrip("@").split("/")[0]
+        try:
+            ent = await client.get_entity(name)
+        except Exception as e:
+            print(f"  ! {raw}: {e}")
+            continue
+        if not isinstance(ent, Channel):
+            print(f"  ! {raw}: that's not a channel")
+            continue
+        if ent.id in known:
+            print(f"  = already watching {ent.title}")
+            continue
+        channels.append(channel_record(ent))
+        known.add(ent.id)
+        print(f"  + {ent.title} (@{ent.username})")
+    save_json(CHANNELS_FILE, channels)
+    print(f"Watching {len(channels)} channel(s). New ones start from their newest post.")
+
+
 async def cmd_test(client):
     channels = load_json(CHANNELS_FILE, [])
     if not channels:
@@ -447,7 +475,7 @@ def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     if cmd == "chat-id":
         return cmd_chat_id()
-    fn = {"discover": cmd_discover, "test": cmd_test, "run": cmd_run,
+    fn = {"discover": cmd_discover, "add": cmd_add, "test": cmd_test, "run": cmd_run,
           "once": cmd_once, "export": cmd_export}.get(cmd)
     if not fn:
         sys.exit(__doc__)
