@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -49,6 +50,10 @@ POLL_MINUTES = float(os.getenv("POLL_MINUTES", "5"))
 MIN_SCORE = int(os.getenv("MIN_SCORE", "2"))
 PROXY = os.getenv("PROXY", "").strip()                    # e.g. socks5://127.0.0.1:1080
 TG_SESSION = os.getenv("TG_SESSION", "").strip()          # string login (used on GitHub)
+# Flood guards. A stale state.json (copied from another machine, or after a long
+# pause) makes every post since then "new"; without these, all of them arrive.
+MAX_AGE_HOURS = float(os.getenv("MAX_AGE_HOURS", "6"))      # ignore posts older than this
+MAX_ALERTS_PER_POLL = int(os.getenv("MAX_ALERTS_PER_POLL", "10"))
 
 CHANNELS_FILE = HERE / "channels.json"
 STATE_FILE = HERE / "state.json"
@@ -314,7 +319,8 @@ async def setup_peers(client):
 
 
 async def poll_once(client, peers, state):
-    matches = 0
+    matches = skipped_old = skipped_cap = 0
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS)
     for key, (ch, peer) in peers.items():
         try:
             new = [m async for m in client.iter_messages(peer, min_id=state[key], reverse=True)]
@@ -326,13 +332,26 @@ async def poll_once(client, peers, state):
             text = msg.message or ""
             if not text.strip():
                 continue
+            if msg.date and msg.date < cutoff:
+                skipped_old += 1
+                continue
             score, terms = score_post(text)
             if score >= MIN_SCORE:
+                if matches >= MAX_ALERTS_PER_POLL:
+                    skipped_cap += 1
+                    continue
                 matches += 1
                 print(f"[{time.strftime('%H:%M')}] match ({score}) in {ch['title']}: {terms[:4]}")
                 await notify(client, ch, msg, score, terms)
         print(f"  {ch['title']}: {len(new)} new post(s)")
+        # Saved per channel, so stopping mid-backlog never replays what was sent.
+        save_json(STATE_FILE, state)
         await asyncio.sleep(2)  # be gentle with rate limits
+    if skipped_old:
+        print(f"  skipped {skipped_old} post(s) older than {MAX_AGE_HOURS:g}h")
+    if skipped_cap:
+        bot_say(f"…and {skipped_cap} more matching post(s) this round, not sent to avoid a flood. "
+                f"(MAX_ALERTS_PER_POLL={MAX_ALERTS_PER_POLL})")
     save_json(STATE_FILE, state)
     return matches
 
