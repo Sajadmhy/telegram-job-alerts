@@ -334,7 +334,22 @@ async def setup_peers(client):
         sys.exit("No channels.json yet - run: python job_alert.py discover")
     state = load_json(STATE_FILE, {})
     peers = {}
+    # Channels can be listed by @username alone (e.g. added to channels.json by
+    # hand on GitHub); the numeric id is looked up once and written back.
+    filled = False
     for ch in channels:
+        if not ch.get("id") and ch.get("username"):
+            try:
+                ent = await client.get_entity(ch["username"])
+                ch["id"], ch["title"] = ent.id, ch.get("title") or ent.title
+                filled = True
+            except Exception as e:
+                print(f"  ! can't find @{ch['username']}: {e}")
+    if filled:
+        save_json(CHANNELS_FILE, channels)
+    for ch in channels:
+        if not ch.get("id"):
+            continue
         p = await resolve(client, ch)
         if p:
             peers[str(ch["id"])] = (ch, p)
