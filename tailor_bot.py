@@ -134,7 +134,7 @@ def _enqueue(label: str, job: dict, reply_to: int | None) -> None:
     job["_reply_to"] = reply_to
     _jobs.put((label, job))
     wait = f" ({ahead} ahead of it)" if ahead else ""
-    _say(f"⏳ Tailoring your resume{wait}. This takes a few minutes on the Pi.", reply_to)
+    _say(f"⏳ Tailoring your resume{wait}. Usually under a minute (a few minutes if the backend runs a local model).", reply_to)
 
 
 def _handle(update: dict) -> None:
