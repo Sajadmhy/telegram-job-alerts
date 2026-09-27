@@ -9,8 +9,10 @@ POST /tailor, running on the same machine) and the PDF comes back as a
 document in the chat. The backend runs a local model, so each resume takes a
 few minutes; requests are handled one at a time, in order.
 
-Only messages from NOTIFY_CHAT_ID are acted on: anyone can find and message a
-bot, and this one spends your CPU and writes resumes from your experience.
+Only you can use it: an update is acted on only when it comes from the
+NOTIFY_CHAT_ID chat AND, if ALLOWED_USERS is set, from one of those Telegram
+accounts (@username or numeric id). Anyone else gets no reply at all. Anyone can
+find and message a bot, and this one writes resumes from your experience.
 
 Settings (.env):
   RESUME_API=http://localhost:8000   # where the backend listens; empty turns this off
@@ -153,11 +155,23 @@ def _enqueue(label: str, job: dict, reply_to: int | None) -> None:
     _say(f"⏳ Tailoring your resume{wait}. Usually under a minute (a few minutes if the backend runs a local model).", reply_to)
 
 
+def _allowed(chat: dict, sender: dict) -> bool:
+    """From the configured chat, and (when ALLOWED_USERS is set) from an allowed account."""
+    if str(chat.get("id", "")) != _cfg["chat_id"]:
+        return False
+    allowed = _cfg.get("allowed") or set()
+    if not allowed:
+        return True
+    uid = str(sender.get("id", ""))
+    uname = (sender.get("username") or "").lower()
+    return uid in allowed or (uname and uname in allowed)
+
+
 def _handle(update: dict) -> None:
     if "callback_query" in update:
         cq = update["callback_query"]
-        chat = str(cq.get("message", {}).get("chat", {}).get("id", ""))
-        if chat != _cfg["chat_id"]:
+        if not _allowed(cq.get("message", {}).get("chat", {}), cq.get("from", {})):
+            print("tailor: ignored button press from", cq.get("from", {}).get("username") or cq.get("from", {}).get("id"))
             return
         key = (cq.get("data") or "")[2:]
         text = _load_posts().get(key)
@@ -173,7 +187,9 @@ def _handle(update: dict) -> None:
         return
 
     msg = update.get("message") or {}
-    if str(msg.get("chat", {}).get("id", "")) != _cfg["chat_id"]:
+    if not _allowed(msg.get("chat", {}), msg.get("from", {})):
+        sender = msg.get("from", {})
+        print("tailor: ignored message from", sender.get("username") or sender.get("id"))
         return
     text = (msg.get("text") or msg.get("caption") or "").strip()
     if not text:
@@ -220,7 +236,8 @@ def start(token: str, chat_id: str, proxies) -> bool:
     global RESUME_API, RESUME_TIMEOUT_MIN
     RESUME_API = os.getenv("RESUME_API", "http://localhost:8000").strip().rstrip("/")
     RESUME_TIMEOUT_MIN = float(os.getenv("RESUME_TIMEOUT_MIN", "20"))
-    _cfg.update(token=token, chat_id=str(chat_id), proxies=proxies)
+    allowed = {u.strip().lstrip("@").lower() for u in os.getenv("ALLOWED_USERS", "").split(",") if u.strip()}
+    _cfg.update(token=token, chat_id=str(chat_id), proxies=proxies, allowed=allowed)
     if not enabled():
         return False
     threading.Thread(target=_worker, name="tailor-worker", daemon=True).start()

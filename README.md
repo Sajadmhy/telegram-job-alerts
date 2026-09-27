@@ -42,7 +42,7 @@ When `python job_alert.py run` can reach the resume backend
 - Every alert gets a **📝 Tailor resume** button. Tap it and the PDF arrives in the chat a few minutes later.
 - You can send the bot any job post yourself, as text or a link, and get a resume back.
 
-Only messages from `NOTIFY_CHAT_ID` are acted on. Requests run one at a time. Set
+Only messages from `NOTIFY_CHAT_ID` are acted on, and if `ALLOWED_USERS` is set (e.g. `@you`), only from those accounts; everyone else is ignored silently. Requests run one at a time. Set
 `RESUME_API` in `.env` (default `http://localhost:8000`; empty turns it off).
 This needs `run` mode on a machine that stays on, such as the Raspberry Pi; the
 GitHub Actions `once` mode can't reach the backend, so its alerts have no button.
