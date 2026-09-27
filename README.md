@@ -9,6 +9,7 @@ Channels found in the chat (on Sep 24):
 - Remote IT (Inflow)
 - Remote Jobs by Remote OK
 - Remote Jobs (@remotejobss), added Sep 27
+- Remote Crypto Jobs (@remotejobshg), added Sep 27
 
 The `discover` command picks these up from the forwarded posts. You don't need to type any usernames.
 
