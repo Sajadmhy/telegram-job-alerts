@@ -45,7 +45,7 @@ API_ID = int(os.getenv("TG_API_ID", "0"))
 API_HASH = os.getenv("TG_API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 NOTIFY_CHAT_ID = os.getenv("NOTIFY_CHAT_ID", "").strip()
-SOURCE_CHAT = os.getenv("SOURCE_CHAT", "")          # chat to discover channels from
+SOURCE_CHAT = os.getenv("SOURCE_CHAT", "")                # chat to discover channels from
 DISCOVER_LIMIT = int(os.getenv("DISCOVER_LIMIT", "200"))  # how many recent messages to scan
 POLL_MINUTES = float(os.getenv("POLL_MINUTES", "5"))
 MIN_SCORE = int(os.getenv("MIN_SCORE", "2"))
@@ -223,6 +223,8 @@ def channel_record(ent):
 
 
 async def cmd_discover(client):
+    if not SOURCE_CHAT:
+        sys.exit("Set SOURCE_CHAT in .env to the chat (name or @username) to discover channels from.")
     dialog = await find_source_dialog(client)
     if not dialog:
         sys.exit(f"Couldn't find a chat named '{SOURCE_CHAT}'. Set SOURCE_CHAT in .env.")
