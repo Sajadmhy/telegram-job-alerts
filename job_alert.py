@@ -20,12 +20,17 @@ Commands:
   python job_alert.py run        # watch forever and notify (+ resume tailoring, see tailor_bot.py)
   python job_alert.py once       # check once, notify, save state, exit (used by GitHub Actions)
   python job_alert.py export     # make a separate login for GitHub -> github_secret.txt
+
+In the bot chat, /stop pauses the alerts and /start turns them back on (or tap
+the button under the message box). In `once` mode the command takes effect on
+the next run.
 """
 import asyncio
 import json
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -135,8 +140,12 @@ def load_json(path, default):
         return default
 
 
+_save_lock = threading.Lock()  # the bot listener thread saves state.json too
+
+
 def save_json(path, data):
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    with _save_lock:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def make_client(session=None):
@@ -320,14 +329,96 @@ async def cmd_test(client):
             print(f"{mark} {score:>3}  {first}   {terms[:4] if score >= MIN_SCORE else ''}")
 
 
-def bot_say(text):
+def bot_say(text, markup=None):
     if BOT_TOKEN and NOTIFY_CHAT_ID:
+        body = {"chat_id": NOTIFY_CHAT_ID, "text": text}
+        if markup:
+            body["reply_markup"] = markup
         try:
             requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                          json={"chat_id": NOTIFY_CHAT_ID, "text": text},
-                          proxies=http_proxies(), timeout=30)
+                          json=body, proxies=http_proxies(), timeout=30)
         except requests.RequestException as e:
             print("Couldn't send bot message:", e)
+
+
+# --------------------------------------------------------------------------
+# /start and /stop. The flag lives in state.json as "paused", so it survives a
+# restart and the GitHub workflow (which commits state.json) keeps it too.
+# While paused the channels are still read, so turning alerts back on doesn't
+# replay everything posted in between.
+# --------------------------------------------------------------------------
+STOP_LABEL = "⏸ Stop alerts"
+START_LABEL = "▶️ Start alerts"
+
+
+def controls(paused):
+    """The button under the message box: whichever of start/stop applies now."""
+    return {"keyboard": [[{"text": START_LABEL if paused else STOP_LABEL}]],
+            "resize_keyboard": True, "is_persistent": True}
+
+
+def alert_command(state, text):
+    """(reply, keyboard) for /start, /stop and their buttons; None for anything else."""
+    t = text.strip()
+    word = t.split()[0].split("@")[0].lower() if t.startswith("/") else ""
+    if word == "/stop" or t == STOP_LABEL:
+        paused = True
+    elif word == "/start" or t == START_LABEL:
+        paused = False
+    else:
+        return None
+    was = state.get("paused", False)
+    state["paused"] = paused
+    save_json(STATE_FILE, state)
+    if paused:
+        reply = "⏸ Alerts are already paused." if was else "⏸ Alerts paused."
+        reply += " Send /start to turn them back on."
+        if tailor_bot.enabled():
+            reply += " You can still send me job posts for a resume."
+    else:
+        reply = "▶️ Alerts are on." if was else "▶️ Alerts are already on."
+        reply += " Send /stop to pause them."
+    return reply, controls(paused)
+
+
+def register_commands():
+    """Puts /start and /stop in the bot's menu button."""
+    if not BOT_TOKEN:
+        return
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands", json={"commands": [
+            {"command": "start", "description": "Turn job alerts on"},
+            {"command": "stop", "description": "Pause job alerts"},
+        ]}, proxies=http_proxies(), timeout=30)
+    except requests.RequestException as e:
+        print("Couldn't set the bot menu:", e)
+
+
+def apply_pending_commands(state):
+    """`once` mode has no listener, so each run reads what was sent since the last one."""
+    if not (BOT_TOKEN and NOTIFY_CHAT_ID):
+        return
+    api = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    try:
+        updates = requests.post(api, json={"timeout": 0, "allowed_updates": ["message"]},
+                                proxies=http_proxies(), timeout=30).json().get("result", [])
+    except (requests.RequestException, ValueError) as e:
+        print("Couldn't read bot commands:", e)
+        return
+    if not updates:
+        return
+    reply = None
+    for u in updates:
+        msg = u.get("message") or {}
+        if tailor_bot.allowed(msg.get("chat", {}), msg.get("from", {})):
+            reply = alert_command(state, msg.get("text") or "") or reply
+    try:  # mark them read, so the next run doesn't apply them again
+        requests.post(api, json={"timeout": 0, "offset": updates[-1]["update_id"] + 1},
+                      proxies=http_proxies(), timeout=30)
+    except requests.RequestException as e:
+        print("Couldn't confirm bot commands:", e)
+    if reply:
+        bot_say(*reply)
 
 
 async def setup_peers(client):
@@ -359,6 +450,7 @@ async def setup_peers(client):
                 # First time: start from the newest post, don't flood with old ones
                 latest = await client.get_messages(p, limit=1)
                 state[str(ch["id"])] = latest[0].id if latest else 0
+    state.setdefault("paused", False)
     save_json(STATE_FILE, state)
     return peers, state
 
@@ -380,6 +472,8 @@ async def poll_once(client, peers, state):
             if msg.date and msg.date < cutoff:
                 skipped_old += 1
                 continue
+            if state.get("paused"):
+                continue
             score, terms = score_post(text)
             if score >= MIN_SCORE:
                 if matches >= MAX_ALERTS_PER_POLL:
@@ -388,7 +482,7 @@ async def poll_once(client, peers, state):
                 matches += 1
                 print(f"[{time.strftime('%H:%M')}] match ({score}) in {ch['title']}: {terms[:4]}")
                 await notify(client, ch, msg, score, terms)
-        print(f"  {ch['title']}: {len(new)} new post(s)")
+        print(f"  {ch['title']}: {len(new)} new post(s)" + (" (paused)" if state.get("paused") else ""))
         # Saved per channel, so stopping mid-backlog never replays what was sent.
         save_json(STATE_FILE, state)
         await asyncio.sleep(2)  # be gentle with rate limits
@@ -404,10 +498,16 @@ async def poll_once(client, peers, state):
 async def cmd_run(client):
     peers, state = await setup_peers(client)
     where = "your bot" if BOT_TOKEN and NOTIFY_CHAT_ID else "Saved Messages"
-    if tailor_bot.start(BOT_TOKEN, NOTIFY_CHAT_ID, http_proxies()):
+    if tailor_bot.start(BOT_TOKEN, NOTIFY_CHAT_ID, http_proxies(),
+                        on_command=lambda text: alert_command(state, text)):
         print(f"Resume tailoring on: alerts get a button, and the bot takes posts you send it ({tailor_bot.RESUME_API}).")
-    print(f"Watching {len(peers)} channel(s), every {POLL_MINUTES:g} min. Alerts go to {where}. Ctrl+C to stop.")
-    bot_say("✅ Job alerts running. Watching:\n" + "\n".join(f"• {c['title']}" for c, _ in peers.values()))
+    register_commands()
+    paused = state.get("paused", False)
+    print(f"Watching {len(peers)} channel(s), every {POLL_MINUTES:g} min. Alerts go to {where}"
+          f"{' (paused, /start in the bot resumes)' if paused else ''}. Ctrl+C to stop.")
+    head = "⏸ Job alerts running, but paused. Send /start to turn them on." if paused else "✅ Job alerts running."
+    bot_say(head + " Watching:\n" + "\n".join(f"• {c['title']}" for c, _ in peers.values()),
+            controls(paused))
     while True:
         await poll_once(client, peers, state)
         await asyncio.sleep(POLL_MINUTES * 60)
@@ -417,6 +517,9 @@ async def cmd_once(client):
     peers, state = await setup_peers(client)
     if not peers:
         sys.exit("Couldn't open any channel - check the login secret.")
+    tailor_bot.configure(BOT_TOKEN, NOTIFY_CHAT_ID, http_proxies(), tailoring=False)
+    register_commands()
+    apply_pending_commands(state)
     n = await poll_once(client, peers, state)
     print(f"Done: {n} alert(s) sent.")
 
@@ -440,7 +543,7 @@ async def cmd_export(client):
     session_str = gh.session.save()
     await gh.disconnect()
     # 3) Everything GitHub needs, as one secret
-    keep = ("TG_API_ID", "TG_API_HASH", "BOT_TOKEN", "NOTIFY_CHAT_ID", "MIN_SCORE")
+    keep = ("TG_API_ID", "TG_API_HASH", "BOT_TOKEN", "NOTIFY_CHAT_ID", "MIN_SCORE", "ALLOWED_USERS")
     lines = [l for l in (HERE / ".env").read_text(encoding="utf-8").splitlines()
              if l.split("=", 1)[0] in keep]
     lines.append(f"TG_SESSION={session_str}")
