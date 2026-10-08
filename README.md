@@ -36,6 +36,15 @@ cp .env.example .env
 - Each post gets a score from keywords (English and Persian), such as React, Node, Python, backend, AI/LLM, برنامه نویس or فرانت. Non-tech roles like waitress or housekeeping subtract points. Posts with a score of at least `MIN_SCORE` get sent to you with the matched keywords and a link.
 - To tune what matches, edit the `POSITIVE` and `NEGATIVE` lists at the top of `job_alert.py`.
 
+## Pausing alerts
+
+Send the bot **/stop** to pause alerts and **/start** to turn them back on. Both are in the bot's menu, and there's also a button under the message box that switches between ⏸ Stop alerts and ▶️ Start alerts. Only you can use them (same `NOTIFY_CHAT_ID` and `ALLOWED_USERS` check as below).
+
+- The setting is saved in `state.json`, so it survives restarts.
+- While alerts are paused, the channels are still read, so turning alerts back on doesn't replay everything posted in between.
+- With `run`, the change is instant. On GitHub Actions it applies at the next run (up to about 10 minutes).
+- Resume tailoring keeps working while alerts are paused.
+
 ## Tailored resumes (with the `unemployed` backend)
 
 When `python job_alert.py run` can reach the resume backend

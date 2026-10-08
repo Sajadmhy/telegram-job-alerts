@@ -4,6 +4,9 @@ Two ways in:
   * Tap "📝 Tailor resume" under any alert.
   * Send the bot a job post yourself: paste the text, or send a link.
 
+The same listener takes /start and /stop, which turn the alerts on and off
+(job_alert.py decides what they do, through the on_command hook).
+
 Either way the job goes to the resume backend (the `unemployed` repo's
 POST /tailor, running on the same machine) and the PDF comes back as a
 document in the chat. The backend runs a local model, so each resume takes a
@@ -41,7 +44,7 @@ _lock = threading.Lock()
 _jobs: "queue.Queue[tuple[str, dict]]" = queue.Queue()
 _URL_RE = re.compile(r"https?://\S+")
 
-_cfg = {"token": "", "chat_id": "", "proxies": None}
+_cfg = {"token": "", "chat_id": "", "proxies": None, "allowed": set(), "on_command": None}
 
 
 def enabled() -> bool:
@@ -77,8 +80,10 @@ def _api(method: str, timeout: float = 30, **kwargs):
     return requests.post(url, proxies=_cfg["proxies"], timeout=timeout, **kwargs)
 
 
-def _say(text: str, reply_to: int | None = None) -> None:
+def _say(text: str, reply_to: int | None = None, markup: dict | None = None) -> None:
     body = {"chat_id": _cfg["chat_id"], "text": text, "disable_web_page_preview": True}
+    if markup:
+        body["reply_markup"] = markup
     if reply_to:
         body["reply_to_message_id"] = reply_to
         body["allow_sending_without_reply"] = True
@@ -155,7 +160,7 @@ def _enqueue(label: str, job: dict, reply_to: int | None) -> None:
     _say(f"⏳ Tailoring your resume{wait}. Usually under a minute (a few minutes if the backend runs a local model).", reply_to)
 
 
-def _allowed(chat: dict, sender: dict) -> bool:
+def allowed(chat: dict, sender: dict) -> bool:
     """From the configured chat, and (when ALLOWED_USERS is set) from an allowed account."""
     if str(chat.get("id", "")) != _cfg["chat_id"]:
         return False
@@ -170,7 +175,7 @@ def _allowed(chat: dict, sender: dict) -> bool:
 def _handle(update: dict) -> None:
     if "callback_query" in update:
         cq = update["callback_query"]
-        if not _allowed(cq.get("message", {}).get("chat", {}), cq.get("from", {})):
+        if not allowed(cq.get("message", {}).get("chat", {}), cq.get("from", {})):
             print("tailor: ignored button press from", cq.get("from", {}).get("username") or cq.get("from", {}).get("id"))
             return
         key = (cq.get("data") or "")[2:]
@@ -187,16 +192,25 @@ def _handle(update: dict) -> None:
         return
 
     msg = update.get("message") or {}
-    if not _allowed(msg.get("chat", {}), msg.get("from", {})):
+    if not allowed(msg.get("chat", {}), msg.get("from", {})):
         sender = msg.get("from", {})
         print("tailor: ignored message from", sender.get("username") or sender.get("id"))
         return
     text = (msg.get("text") or msg.get("caption") or "").strip()
     if not text:
         return
+    if _cfg["on_command"]:
+        reply = _cfg["on_command"](text)
+        if reply:
+            _say(reply[0], markup=reply[1])
+            return
+    if not enabled():
+        _say("/stop pauses the job alerts and /start turns them back on.")
+        return
     if text.startswith("/"):
         _say("Send me a job post (the text, or a link to it) and I'll send back a resume "
-             "tailored to it. You can also tap “📝 Tailor resume” under any alert.")
+             "tailored to it. You can also tap “📝 Tailor resume” under any alert.\n\n"
+             "/stop pauses the job alerts and /start turns them back on.")
         return
     urls = _URL_RE.findall(text)
     if len(text) < 50 and not urls:
@@ -231,15 +245,26 @@ def _poll() -> None:
             time.sleep(15)
 
 
-def start(token: str, chat_id: str, proxies) -> bool:
-    """Start the listener and the worker in background threads. Returns whether it started."""
+def configure(token: str, chat_id: str, proxies, tailoring: bool = True) -> None:
+    """Read the settings. With tailoring=False (GitHub Actions) alerts get no button."""
     global RESUME_API, RESUME_TIMEOUT_MIN
-    RESUME_API = os.getenv("RESUME_API", "http://localhost:8000").strip().rstrip("/")
+    RESUME_API = os.getenv("RESUME_API", "http://localhost:8000").strip().rstrip("/") if tailoring else ""
     RESUME_TIMEOUT_MIN = float(os.getenv("RESUME_TIMEOUT_MIN", "20"))
-    allowed = {u.strip().lstrip("@").lower() for u in os.getenv("ALLOWED_USERS", "").split(",") if u.strip()}
-    _cfg.update(token=token, chat_id=str(chat_id), proxies=proxies, allowed=allowed)
-    if not enabled():
+    users = {u.strip().lstrip("@").lower() for u in os.getenv("ALLOWED_USERS", "").split(",") if u.strip()}
+    _cfg.update(token=token, chat_id=str(chat_id), proxies=proxies, allowed=users)
+
+
+def start(token: str, chat_id: str, proxies, on_command=None) -> bool:
+    """Start listening to the bot in background threads. Returns whether tailoring is on.
+
+    on_command(text) gets every allowed message first; when it returns
+    (reply_text, reply_markup) that is sent back and the message goes no further.
+    """
+    configure(token, chat_id, proxies)
+    _cfg["on_command"] = on_command
+    if not (token and chat_id):
         return False
-    threading.Thread(target=_worker, name="tailor-worker", daemon=True).start()
+    if enabled():
+        threading.Thread(target=_worker, name="tailor-worker", daemon=True).start()
     threading.Thread(target=_poll, name="tailor-poll", daemon=True).start()
-    return True
+    return enabled()
